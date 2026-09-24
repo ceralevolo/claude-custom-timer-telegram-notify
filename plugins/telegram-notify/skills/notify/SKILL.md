@@ -1,4 +1,5 @@
 ---
+name: notify
 description: Telegram notifications for this session — on [min <duration>] · off · (empty = status)
 argument-hint: on [min 30s|5m] | off
 disable-model-invocation: true

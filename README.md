@@ -11,10 +11,10 @@ duration** so the quick back-and-forth at the start of a session doesn't spam yo
 /notify off             stop notifying in this session
 ```
 
-`/notify` never reaches the model. A `UserPromptExpansion` hook intercepts it, or a
-`UserPromptSubmit` hook when the short name reaches Claude as plain text. The hook stores the
-switch and blocks the prompt, so no model turn, no tokens and no notification are spent on it.
-The namespaced form `/telegram-notify:notify` works too.
+`/notify` is a plugin skill (`/telegram-notify:notify` works too), but it never reaches the model.
+A `UserPromptExpansion` hook intercepts it, stores the switch and blocks the prompt, so no model
+turn, no tokens and no notification are spent on it. A `UserPromptSubmit` fallback catches
+`/notify …` typed as plain text in headless mode.
 
 ## What gets sent
 
@@ -29,9 +29,11 @@ and the last assistant message, truncated to 3900 characters. The notifier skips
 turns (active background tasks or scheduled loops) and non-blocking notifications such as
 `idle_prompt`. It deduplicates repeated hook invocations.
 
-The switch and threshold apply to all three kinds. The turn clock starts on `UserPromptSubmit`,
-or on the expansion of any other slash command. If the start of a turn is unknown, the notifier
-sends anyway (fail-open).
+The switch and threshold apply to all three kinds. The turn clock starts on your prompt
+(`UserPromptSubmit`) or on the expansion of any other slash command. Prompts injected by Claude
+Code, such as `<task-notification>` when a background task finishes, continue the same turn and
+do not restart the clock. If the start of a turn is unknown, the notifier sends anyway
+(fail-open).
 
 ## Install
 

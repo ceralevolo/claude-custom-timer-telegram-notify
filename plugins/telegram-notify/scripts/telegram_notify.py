@@ -42,6 +42,9 @@ USAGE = (
 # `/notify …` typed as text: a plugin command's short name may not resolve as a
 # command and then reaches UserPromptSubmit as a plain prompt.
 RAW_NOTIFY_PATTERN = re.compile(r"^\s*/(?:[\w-]+:)?notify(?:\s+(.*?))?\s*$", re.DOTALL)
+# Prompts injected by Claude Code (e.g. a background task finishing) continue the
+# user's turn: they must not restart the turn clock.
+SYSTEM_PROMPT_PREFIXES = ("<task-notification>",)
 DURATION_PATTERN = re.compile(r"^(\d+)(s|sec|m|min|h)?$")
 DURATION_UNITS = {None: 1, "s": 1, "sec": 1, "m": 60, "min": 60, "h": 3600}
 SWITCH_OFF = {"enabled": False, "min_seconds": 0}
@@ -412,10 +415,12 @@ def handle_expansion(payload: dict[str, object]) -> int:
 
 def handle_submit(payload: dict[str, object]) -> int:
     session_id = str(payload.get("session_id") or "")
-    match = RAW_NOTIFY_PATTERN.match(str(payload.get("prompt") or ""))
+    prompt = str(payload.get("prompt") or "")
+    match = RAW_NOTIFY_PATTERN.match(prompt)
     if match:
         return block_with_notify(session_id, match.group(1) or "")
-    record_turn_start(session_id)
+    if not prompt.lstrip().startswith(SYSTEM_PROMPT_PREFIXES):
+        record_turn_start(session_id)
     return 0
 
 

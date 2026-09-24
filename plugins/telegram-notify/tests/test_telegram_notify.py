@@ -731,5 +731,18 @@ class NotifySwitchTest(NotifierTestBase):
             self.assertEqual(result.stderr, "", prompt)
 
 
+    def test_task_notification_prompt_keeps_turn_clock(self) -> None:
+        self.notify_cmd("on min 10")
+        self.prompt_submit()
+        self.backdate_turn(20)
+        result = self.submit_raw(
+            "<task-notification>\n<task-id>abc</task-id>\n<status>completed</status>"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.run_notifier(self.stop_payload())
+        self.assertEqual(len(self.server.requests), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
