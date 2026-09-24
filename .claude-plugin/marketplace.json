@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "ceralevolo-plugins",
+  "description": "Claude Code plugins by ceralevolo",
+  "owner": {
+    "name": "ceralevolo"
+  },
+  "plugins": [
+    {
+      "name": "telegram-notify",
+      "description": "Telegram notifications when Claude Code finishes a turn, with a per-session /notify on|off switch and a minimum turn duration.",
+      "source": "./plugins/telegram-notify",
+      "category": "productivity"
+    }
+  ]
+}

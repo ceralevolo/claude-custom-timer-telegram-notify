@@ -1,0 +1,14 @@
+{
+  "name": "telegram-notify",
+  "version": "1.0.0",
+  "description": "Telegram notifications when Claude Code finishes a turn, with a per-session /notify on|off switch and a minimum turn duration.",
+  "author": {
+    "name": "ceralevolo"
+  },
+  "repository": "https://github.com/ceralevolo/claude-custom-timer-telegram-notify",
+  "keywords": [
+    "telegram",
+    "notifications",
+    "hooks"
+  ]
+}
