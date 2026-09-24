@@ -11,14 +11,16 @@ duration** so the quick back-and-forth at the start of a session doesn't spam yo
 /notify off             stop notifying in this session
 ```
 
-`/notify` never reaches the model: a `UserPromptExpansion` hook intercepts it, stores the switch
-and blocks the expansion. No model turn, no tokens and no notification are spent on it.
+`/notify` never reaches the model. A `UserPromptExpansion` hook intercepts it, or a
+`UserPromptSubmit` hook when the short name reaches Claude as plain text. The hook stores the
+switch and blocks the prompt, so no model turn, no tokens and no notification are spent on it.
+The namespaced form `/telegram-notify:notify` works too.
 
 ## What gets sent
 
 | Icon | When |
 |---|---|
-| ✅ / ❓ | `Stop`: end of turn. ❓ is used when the last reply looks like a question. |
+| ✅ / ❓ | `Stop`: end of turn. ❓ is used when the last reply contains `?` or an explicit request for input (English and Italian phrasings). |
 | ⚠️ | `StopFailure`: the turn ended on an API error. |
 | ⏸️ | `Notification`: Claude is blocked on you (permission prompt, input request). |
 
@@ -103,3 +105,7 @@ Telegram.
 
 `/plugin uninstall telegram-notify@ceralevolo-plugins`. Remove
 `~/.config/claude-telegram-notify/` too if you no longer need the credentials.
+
+## License
+
+[MIT](LICENSE)

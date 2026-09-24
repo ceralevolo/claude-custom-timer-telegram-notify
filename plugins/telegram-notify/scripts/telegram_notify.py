@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Hook Claude Code (Stop/StopFailure/Notification) → notifica Telegram privata, fail-open.
+"""Claude Code hook (Stop/StopFailure/Notification) → private Telegram message, fail-open.
 
-Legge il payload JSON solo da stdin. Non legge mai il transcript: di
-`transcript_path` usa soltanto i metadati stat() per la deduplicazione. Nello
-stato SQLite finiscono solo digest, stato e timestamp.
+Reads the JSON payload from stdin only. Never reads the transcript: only the
+stat() metadata of `transcript_path` is used for deduplication. The SQLite
+state holds only digests, a status and timestamps.
 
-Switch per sessione: `/notify on [min <durata>]`, `/notify off`, `/notify`
-(stato) sono intercettati sull'hook UserPromptExpansion ed escono con exit 2
-(espansione bloccata, messaggio su stderr mostrato solo all'utente, nessun turno
-del modello). UserPromptSubmit e gli altri slash command registrano l'inizio
-del turno, usato per la soglia minima di durata. Ogni altro percorso esce con 0.
+Per-session switch: `/notify on [min <duration>]`, `/notify off` and `/notify`
+(status) are intercepted on UserPromptExpansion (or on UserPromptSubmit when
+typed as plain text) and exit 2: the prompt is blocked, the stderr message is
+shown to the user only and no model turn runs. UserPromptSubmit and other
+slash commands record the turn start used by the minimum-duration threshold.
+Every other path exits 0.
 """
 from __future__ import annotations
 
@@ -38,14 +39,14 @@ USAGE = (
     "Usage: /notify on [min <duration>] · /notify off · /notify (status)\n"
     "Duration: 30, 45s, 5m, 1h — only turns longer than the threshold notify."
 )
-# `/notify …` digitato come testo: da plugin il nome corto può non essere risolto
-# come comando e arrivare a UserPromptSubmit come prompt normale.
+# `/notify …` typed as text: a plugin command's short name may not resolve as a
+# command and then reaches UserPromptSubmit as a plain prompt.
 RAW_NOTIFY_PATTERN = re.compile(r"^\s*/(?:[\w-]+:)?notify(?:\s+(.*?))?\s*$", re.DOTALL)
 DURATION_PATTERN = re.compile(r"^(\d+)(s|sec|m|min|h)?$")
 DURATION_UNITS = {None: 1, "s": 1, "sec": 1, "m": 60, "min": 60, "h": 3600}
 SWITCH_OFF = {"enabled": False, "min_seconds": 0}
 MAX_MESSAGE_LENGTH = 3900
-TRUNCATION_MARKER = "\n\n[messaggio troncato]"
+TRUNCATION_MARKER = "\n\n[message truncated]"
 STAT_SENTINEL = "-"
 ACTIVE_TASK_STATUSES = {"running", "pending", "queued", "starting", "in_progress"}
 BLOCKING_NOTIFICATION_TYPES = {
@@ -54,8 +55,11 @@ BLOCKING_NOTIFICATION_TYPES = {
     "elicitation_url_dialog",
     "agent_needs_input",
 }
+# Explicit requests for a decision or input, in English and Italian.
 QUESTION_PATTERN = re.compile(
-    r"\b(mi serve|serve una|ho bisogno di|scegli|confermi|autorizzi|"
+    r"\b(let me know|please confirm|do you want|would you like|should i|"
+    r"your call|need your|waiting for your|choose|approve|"
+    r"mi serve|serve una|ho bisogno di|scegli|confermi|autorizzi|"
     r"decisione|richiesta di input|dimmi se|fammi sapere)\b",
     re.IGNORECASE,
 )
@@ -64,9 +68,9 @@ QUESTION_PATTERN = re.compile(
 def load_credentials(path: Path) -> dict[str, str]:
     info = path.lstat()
     if path.is_symlink() or not stat.S_ISREG(info.st_mode):
-        raise PermissionError("il file credenziali deve essere regolare")
+        raise PermissionError("credentials file must be a regular file")
     if info.st_uid != os.getuid() or info.st_mode & 0o077:
-        raise PermissionError("owner o permessi credenziali non sicuri")
+        raise PermissionError("unsafe credentials owner or permissions")
     values: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line or line.lstrip().startswith("#") or "=" not in line:
@@ -74,15 +78,15 @@ def load_credentials(path: Path) -> dict[str, str]:
         key, value = line.split("=", 1)
         values[key.strip()] = value.strip()
     if not values.get("TELEGRAM_BOT_TOKEN") or not values.get("TELEGRAM_CHAT_ID"):
-        raise ValueError("credenziali incomplete")
+        raise ValueError("incomplete credentials")
     return values
 
 
 def work_in_progress(payload: dict[str, object]) -> bool:
-    """True se il turno è intermedio: task in background attivi o loop schedulati.
+    """True for an intermediate turn: active background tasks or scheduled loops.
 
-    Solo stati attivi noti sopprimono la notifica: su dati assenti o inattesi
-    si notifica comunque (fail-open verso il comportamento storico).
+    Only known active states suppress the notification: on missing or
+    unexpected data the notification is sent anyway (fail-open).
     """
     crons = payload.get("session_crons")
     if isinstance(crons, list) and crons:
@@ -99,7 +103,7 @@ def work_in_progress(payload: dict[str, object]) -> bool:
 
 
 class UsageError(ValueError):
-    """Argomenti di /notify non validi: lo stato non viene modificato."""
+    """Invalid /notify arguments: the state is left unchanged."""
 
 
 def parse_duration(text: str) -> int:
@@ -110,9 +114,9 @@ def parse_duration(text: str) -> int:
 
 
 def parse_switch(args: str) -> dict[str, object] | None:
-    """`None` = richiesta di stato; altrimenti {'enabled', 'min_seconds'}."""
+    """`None` = status request; otherwise {'enabled', 'min_seconds'}."""
     tokens = args.lower().replace("=", " ").split()
-    if not tokens or tokens in (["status"], ["stato"]):
+    if not tokens or tokens == ["status"]:
         return None
     if tokens == ["off"]:
         return dict(SWITCH_OFF)
@@ -137,7 +141,7 @@ def format_duration(seconds: int) -> str:
 
 
 def _data_dir() -> Path:
-    """Stato persistente: la data dir del plugin se Claude Code la fornisce."""
+    """Persistent state: the plugin data dir when Claude Code provides one."""
     return Path(os.environ.get("CLAUDE_PLUGIN_DATA") or FALLBACK_DATA_DIR)
 
 
@@ -146,7 +150,7 @@ def _sessions_dir() -> Path:
 
 
 def _session_file(session_id: str) -> Path:
-    """Nome file = digest del session_id: nessun ID in chiaro su disco."""
+    """File name = digest of the session_id: no plaintext id on disk."""
     digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:32]
     return _sessions_dir() / f"{digest}.json"
 
@@ -186,7 +190,7 @@ def prune_sessions(now: float) -> None:
 
 
 def load_default() -> dict[str, object]:
-    """Switch di default per le sessioni nuove; file assente o illeggibile → OFF."""
+    """Default switch for new sessions; missing or unreadable file → OFF."""
     path = Path(os.environ.get("CLAUDE_TELEGRAM_NOTIFY_DEFAULT", DEFAULT_SWITCH))
     try:
         switch = parse_switch(path.read_text(encoding="utf-8").strip())
@@ -196,7 +200,7 @@ def load_default() -> dict[str, object]:
 
 
 def effective_switch(session: dict[str, object]) -> tuple[dict[str, object], bool]:
-    """(switch, da_default): la scelta di sessione vince sul default."""
+    """(switch, from_default): the session choice wins over the default."""
     if isinstance(session.get("enabled"), bool) and isinstance(session.get("min_seconds"), int):
         return {"enabled": session["enabled"], "min_seconds": session["min_seconds"]}, False
     return load_default(), True
@@ -234,7 +238,7 @@ def handle_notify_command(session_id: str, args: str) -> str:
 
 
 def switch_allows(payload: dict[str, object]) -> bool:
-    """Switch di sessione e soglia minima; inizio turno ignoto → notifica (fail-open)."""
+    """Session switch and minimum duration; unknown turn start → notify (fail-open)."""
     session = read_session(str(payload.get("session_id") or ""))
     switch, _ = effective_switch(session)
     if not switch["enabled"]:
@@ -255,16 +259,16 @@ def build_message(payload: dict[str, object]) -> str:
     assistant_message = str(payload.get("last_assistant_message") or "")
     if payload.get("hook_event_name") == "StopFailure":
         icon = "⚠️"
-        body = f"Errore API: {payload.get('error') or 'sconosciuto'}"
+        body = f"API error: {payload.get('error') or 'unknown'}"
         if assistant_message:
             body += f"\n{assistant_message}"
     elif payload.get("hook_event_name") == "Notification":
         icon = "⏸️"
         body = str(
-            payload.get("message") or payload.get("title") or "Claude è in attesa di input."
+            payload.get("message") or payload.get("title") or "Claude is waiting for your input."
         )
     else:
-        body = assistant_message or "Turno completato."
+        body = assistant_message or "Turn completed."
         icon = classify(body)
     text = f"{icon} Claude · {cwd} · {session}\n\n{body}"
     if len(text) > MAX_MESSAGE_LENGTH:
@@ -273,7 +277,7 @@ def build_message(payload: dict[str, object]) -> str:
 
 
 def fingerprint(payload: dict[str, object]) -> str:
-    """Digest dei soli metadati del turno: nessun valore sorgente viene salvato."""
+    """Digest of turn metadata only: no source value is stored."""
     stat_parts = [STAT_SENTINEL] * 4
     transcript_path = payload.get("transcript_path")
     if transcript_path:
@@ -365,7 +369,7 @@ def _post_message(payload: dict[str, object], credentials: dict[str, str]) -> No
     with urlopen(request, timeout=5) as response:
         result = json.loads(response.read().decode("utf-8"))
     if not result.get("ok"):
-        raise RuntimeError("Telegram ha rifiutato la richiesta")
+        raise RuntimeError("Telegram rejected the request")
 
 
 def deliver(payload: dict[str, object]) -> None:
@@ -390,7 +394,7 @@ def deliver(payload: dict[str, object]) -> None:
 def block_with_notify(session_id: str, args: str) -> int:
     try:
         message = handle_notify_command(session_id, args)
-    except Exception as exc:  # blocca comunque: /notify non deve mai arrivare al modello
+    except Exception as exc:  # block anyway: /notify must never reach the model
         message = f"claude-telegram-notify: error {type(exc).__name__}, state unchanged"
     print(message, file=sys.stderr)
     return EXIT_BLOCK
@@ -398,7 +402,7 @@ def block_with_notify(session_id: str, args: str) -> int:
 
 def handle_expansion(payload: dict[str, object]) -> int:
     session_id = str(payload.get("session_id") or "")
-    # Da plugin il nome può arrivare con namespace: "telegram-notify:notify".
+    # From a plugin the name may be namespaced: "telegram-notify:notify".
     name = str(payload.get("command_name") or "").lstrip("/").rsplit(":", 1)[-1]
     if name != NOTIFY_COMMAND:
         record_turn_start(session_id)
@@ -437,7 +441,7 @@ def main() -> int:
         if not switch_allows(payload):
             return 0
         deliver(payload)
-    except Exception as exc:  # fail-open: il notifier non deve mai bloccare Claude
+    except Exception as exc:  # fail-open: the notifier must never block Claude
         print(f"claude-telegram-notify: {type(exc).__name__}", file=sys.stderr)
     return 0
 
